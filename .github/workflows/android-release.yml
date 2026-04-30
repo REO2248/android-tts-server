@@ -1,0 +1,63 @@
+name: Android Release Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Prepare keystore (from secrets)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "Decoding keystore from KEYSTORE_BASE64..."
+            echo "$KEYSTORE_BASE64" | base64 --decode > ./release.keystore
+            echo "storeFile=$PWD/release.keystore" > keystore.properties
+            echo "storePassword=$KEYSTORE_PASSWORD" >> keystore.properties
+            echo "keyAlias=$KEY_ALIAS" >> keystore.properties
+            echo "keyPassword=$KEY_PASSWORD" >> keystore.properties
+            ls -l release.keystore || true
+          else
+            echo "KEYSTORE_BASE64 not set — gradle may fallback to debug keystore or fail." >&2
+          fi
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build release APK
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
