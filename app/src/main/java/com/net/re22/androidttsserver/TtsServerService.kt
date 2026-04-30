@@ -9,7 +9,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-.
 class TtsServerService : Service() {
     private var ttsEngineManager: TtsEngineManager? = null
     private var httpServer: SimpleHttpServer? = null
