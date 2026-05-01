@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.android.gms.oss-licenses-plugin")
 }
 
 import java.io.FileInputStream
@@ -15,12 +16,12 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "net.re22.androidttsserver"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "net.re22.androidttsserver"
         minSdk = 26
-        targetSdk = 33
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
     }
@@ -76,5 +77,7 @@ android {
 
 dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("com.google.android.gms:play-services-oss-licenses:17.0.1")
 }

@@ -19,6 +19,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import com.google.android.gms.oss.licenses.OssLicensesMenuActivity
 
 class MainActivity : ComponentActivity() {
     private lateinit var statusText: TextView
@@ -27,6 +28,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var applyPortButton: Button
     private lateinit var batteryOptimizationButton: Button
     private lateinit var batteryOptimizationText: TextView
+    private lateinit var openSourceLicensesButton: Button
     private val settings by lazy { getSharedPreferences(PREFS_NAME, MODE_PRIVATE) }
 
     private val requestNotificationPermission =
@@ -79,6 +81,11 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { openBatteryOptimizationSettings() }
         }
 
+        openSourceLicensesButton = Button(this).apply {
+            text = "Open Source Licenses"
+            setOnClickListener { openOpenSourceLicenses() }
+        }
+
         val helpText = TextView(this).apply {
             textSize = 14f
             text = buildString {
@@ -97,6 +104,7 @@ class MainActivity : ComponentActivity() {
         container.addView(applyPortButton)
         container.addView(batteryOptimizationText)
         container.addView(batteryOptimizationButton)
+        container.addView(openSourceLicensesButton)
         container.addView(helpText)
         root.addView(container)
         setContentView(root)
@@ -212,6 +220,11 @@ class MainActivity : ComponentActivity() {
             data = Uri.parse("package:$packageName")
         }
         startActivity(intent)
+    }
+
+    private fun openOpenSourceLicenses() {
+        OssLicensesMenuActivity.setActivityTitle("Open Source Licenses")
+        startActivity(Intent(this, OssLicensesMenuActivity::class.java))
     }
 
     companion object {

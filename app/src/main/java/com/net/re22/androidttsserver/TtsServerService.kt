@@ -4,11 +4,13 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 class TtsServerService : Service() {
     private var ttsEngineManager: TtsEngineManager? = null
     private var httpServer: SimpleHttpServer? = null
@@ -149,7 +151,9 @@ class TtsServerService : Service() {
         ServerRuntimeState.running = false
         // Broadcast stopped state so UI shows correct status
         broadcastState()
-        updateNotification("Stopped")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
 
@@ -159,15 +163,7 @@ class TtsServerService : Service() {
         createNotificationChannel()
         acquireWakeLock()
         val port = ServerRuntimeState.port
-        val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("🎤 TTS Server Running")
-            .setContentText("http://localhost:$port - Listening for requests")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setShowWhen(false)
-            .build()
-        startForeground(NOTIFICATION_ID, notification)
+        postForegroundNotification("http://localhost:$port - Listening for requests")
     }
 
     private fun acquireWakeLock() {
@@ -183,17 +179,31 @@ class TtsServerService : Service() {
     }
 
     private fun updateNotification(text: String) {
-        val notification = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("🎤 TTS Server Running")
+        postForegroundNotification(text)
+    }
+
+    private fun postForegroundNotification(text: String) {
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            buildRunningNotification(text),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+        )
+    }
+
+    private fun buildRunningNotification(text: String) =
+        NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("TTS Server Running")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
+            .setAutoCancel(false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setShowWhen(false)
             .build()
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification)
-    }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
