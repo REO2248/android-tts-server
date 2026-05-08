@@ -51,13 +51,10 @@ class SimpleHttpServer(
     private fun handleConnection(socket: Socket) {
         socket.use { client ->
             try {
+                client.soTimeout = 30000 // Added timeout for stability
                 val request = readRequest(client.getInputStream())
                 val response = route(request)
-                try {
-                    writeResponse(client.getOutputStream(), response)
-                } catch (_: SocketException) {
-                    // Client disconnected before the response was written.
-                }
+                writeResponse(client.getOutputStream(), response)
             } catch (error: Exception) {
                 try {
                     writeResponse(
@@ -69,15 +66,22 @@ class SimpleHttpServer(
                             error.message.orEmpty().toByteArray(StandardCharsets.UTF_8),
                         ),
                     )
-                } catch (_: SocketException) {
-                    // Client disconnected before the error response was written.
-                }
+                } catch (_: Exception) {}
             }
         }
     }
 
     private fun route(request: HttpRequest): HttpResponse {
         val pathWithoutQuery = request.path.substringBefore('?')
+
+        // Added status check API
+        if (request.method == "GET" && pathWithoutQuery == "/api/status") {
+            val json = JSONObject().apply {
+                put("status", "ok")
+                put("tts_ready", ttsEngineManager.isReady())
+            }
+            return HttpResponse(200, "OK", "application/json", json.toString().toByteArray())
+        }
 
         if (request.method == "GET" && pathWithoutQuery == "/") {
             val voices = ttsEngineManager.availableVoices()
@@ -104,13 +108,10 @@ class SimpleHttpServer(
         if (request.method == "POST" && pathWithoutQuery == "/api/tts") {
             return try {
                 val bodyString = String(request.body, StandardCharsets.UTF_8)
-                if (bodyString.isEmpty()) {
-                    return HttpResponse(400, "Bad Request", "text/plain; charset=utf-8", "Empty body".toByteArray(StandardCharsets.UTF_8))
-                }
                 val payload = JSONObject(bodyString)
                 val text = payload.optString("text").trim()
                 if (text.isEmpty()) {
-                    return HttpResponse(400, "Bad Request", "text/plain; charset=utf-8", "Missing text".toByteArray(StandardCharsets.UTF_8))
+                    return HttpResponse(400, "Bad Request", "text/plain", "Missing text".toByteArray())
                 }
                 val ttsRequest = TtsRequest(
                     text = text,
@@ -119,10 +120,8 @@ class SimpleHttpServer(
                     pitch = payload.optDouble("pitch", 1.0).toFloat(),
                 )
                 HttpResponse(200, "OK", "audio/wav", ttsEngineManager.synthesize(ttsRequest))
-            } catch (jsonError: org.json.JSONException) {
-                HttpResponse(400, "Bad Request", "text/plain; charset=utf-8", "Invalid JSON: ${jsonError.message.orEmpty()}".toByteArray(StandardCharsets.UTF_8))
             } catch (error: Exception) {
-                HttpResponse(400, "Bad Request", "text/plain; charset=utf-8", error.message.orEmpty().toByteArray(StandardCharsets.UTF_8))
+                HttpResponse(500, "Internal Server Error", "text/plain", error.message.orEmpty().toByteArray())
             }
         }
 

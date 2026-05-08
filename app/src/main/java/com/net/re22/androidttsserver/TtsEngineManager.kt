@@ -8,6 +8,7 @@ import android.speech.tts.Voice
 import android.util.Log
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -15,21 +16,17 @@ import java.util.concurrent.atomic.AtomicReference
 class TtsEngineManager(context: Context) {
     private val appContext = context.applicationContext
     private val initLatch = CountDownLatch(1)
-    private val requestLock = Any()
-    private val readyVoiceNames = mutableMapOf<String, Voice>()
-    @Volatile
+    private val synthesisLock = Any()
+    private val activeRequests = ConcurrentHashMap<String, SynthesisResultWaiter>()
     private var cachedVoiceInfos: List<VoiceInfo> = emptyList()
+
     private val textToSpeech = TextToSpeech(appContext) { status ->
-        synchronized(requestLock) {
-            if (status == TextToSpeech.SUCCESS) {
-                refreshVoiceCache()
-            }
-            initLatch.countDown()
+        if (status == TextToSpeech.SUCCESS) {
+            refreshVoiceCache()
         }
+        initLatch.countDown()
     }
 
-    private val pendingUtteranceId = AtomicReference<String?>(null)
-    private val pendingResult = AtomicReference<SynthesisOutcome?>(null)
     private val tag = "TtsEngineManager"
 
     init {
@@ -37,27 +34,21 @@ class TtsEngineManager(context: Context) {
             override fun onStart(utteranceId: String) = Unit
 
             override fun onDone(utteranceId: String) {
-                if (pendingUtteranceId.compareAndSet(utteranceId, null)) {
-                    pendingResult.set(SynthesisOutcome.Success)
-                }
+                activeRequests[utteranceId]?.complete(SynthesisOutcome.Success)
             }
 
             @Suppress("DEPRECATION")
             override fun onError(utteranceId: String) {
-                if (pendingUtteranceId.compareAndSet(utteranceId, null)) {
-                    pendingResult.set(SynthesisOutcome.Failure("TTS engine returned an error for $utteranceId"))
-                }
+                activeRequests[utteranceId]?.complete(SynthesisOutcome.Failure("General error"))
             }
 
             override fun onError(utteranceId: String, errorCode: Int) {
-                if (pendingUtteranceId.compareAndSet(utteranceId, null)) {
-                    pendingResult.set(SynthesisOutcome.Failure("TTS engine returned error code $errorCode"))
-                }
+                activeRequests[utteranceId]?.complete(SynthesisOutcome.Failure("Error code: $errorCode"))
             }
         })
     }
 
-    fun isReady(): Boolean = initLatch.count == 0L && textToSpeech.voices != null
+    fun isReady(): Boolean = initLatch.count == 0L
 
     fun availableVoices(): List<VoiceInfo> {
         awaitReady()
@@ -66,41 +57,85 @@ class TtsEngineManager(context: Context) {
 
     fun synthesize(request: TtsRequest): ByteArray {
         awaitReady()
-        val voice = request.voiceId?.let { id ->
-            readyVoiceNames[id]
+        
+        val utteranceId = UUID.randomUUID().toString()
+        val waiter = SynthesisResultWaiter()
+        activeRequests[utteranceId] = waiter
+        
+        val outputFile = File.createTempFile("tts-", ".wav", appContext.cacheDir)
+        
+        try {
+            synchronized(synthesisLock) {
+                setupParameters(request)
+                val params = Bundle().apply {
+                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+                }
+                Log.i(tag, "Synthesize: $utteranceId")
+                val queueResult = textToSpeech.synthesizeToFile(request.text, params, outputFile, utteranceId)
+                if (queueResult != TextToSpeech.SUCCESS) {
+                    throw IllegalStateException("Failed to queue synthesis: $queueResult")
+                }
+            }
+
+            val outcome = waiter.await(60, TimeUnit.SECONDS)
+                ?: throw IllegalStateException("Timeout for $utteranceId")
+
+            if (outcome is SynthesisOutcome.Failure) {
+                throw IllegalStateException(outcome.message)
+            }
+
+            ensureFileIsReady(outputFile)
+            return outputFile.readBytes()
+
+        } finally {
+            activeRequests.remove(utteranceId)
+            if (outputFile.exists()) outputFile.delete()
         }
-        Log.i(tag, "synthesize: textLength=${request.text.length}, voiceId=${request.voiceId}, voice=${voice?.name ?: "<default>"}, locale=${voice?.locale}, speed=${request.speed}, pitch=${request.pitch}")
-        if (voice != null) {
-            textToSpeech.voice = voice
-            Log.i(tag, "selected voice now=${textToSpeech.voice?.name}, locale=${textToSpeech.voice?.locale}")
+    }
+
+    private fun setupParameters(request: TtsRequest) {
+        request.voiceId?.let { id ->
+            textToSpeech.voices?.find { it.name == id }?.let { textToSpeech.voice = it }
         }
         textToSpeech.setSpeechRate(request.speed.coerceIn(0.1f, 5.0f))
         textToSpeech.setPitch(request.pitch.coerceIn(0.1f, 5.0f))
+    }
 
-        val outputFile = File.createTempFile("tts-", ".wav", appContext.cacheDir)
-        val utteranceId = UUID.randomUUID().toString()
-        pendingUtteranceId.set(utteranceId)
-        pendingResult.set(null)
-
-        val params = Bundle().apply {
-            putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+    private fun awaitReady() {
+        if (!initLatch.await(15, TimeUnit.SECONDS)) {
+            throw IllegalStateException("TTS timeout")
         }
+    }
 
-        synchronized(requestLock) {
-            val queueResult = textToSpeech.synthesizeToFile(request.text, params, outputFile, utteranceId)
-            if (queueResult != TextToSpeech.SUCCESS) {
-                pendingUtteranceId.set(null)
-                outputFile.delete()
-                throw IllegalStateException("Failed to queue synthesis: code=$queueResult")
+    private fun refreshVoiceCache() {
+        cachedVoiceInfos = textToSpeech.voices?.map { voice ->
+            VoiceInfo(
+                id = voice.name,
+                name = voice.name,
+                quality = voice.quality,
+                latency = voice.latency,
+                requiresNetworkConnection = voice.isNetworkConnectionRequired,
+            )
+        } ?: emptyList()
+    }
+
+    private fun ensureFileIsReady(file: File) {
+        val start = System.currentTimeMillis()
+        while (file.length() < 44 && System.currentTimeMillis() - start < 2000) {
+            Thread.sleep(10)
+        }
+        var lastSize = file.length()
+        var stableCount = 0
+        while (System.currentTimeMillis() - start < 5000) {
+            Thread.sleep(20)
+            val currentSize = file.length()
+            if (currentSize > 44 && currentSize == lastSize) {
+                if (++stableCount >= 3) break
+            } else {
+                stableCount = 0
+                lastSize = currentSize
             }
         }
-
-        waitForCompletion(utteranceId, outputFile)
-
-        val audioBytes = outputFile.readBytes()
-        outputFile.delete()
-        Log.i(tag, "synthesize completed: bytes=${audioBytes.size}")
-        return audioBytes
     }
 
     fun shutdown() {
@@ -108,80 +143,21 @@ class TtsEngineManager(context: Context) {
         textToSpeech.shutdown()
     }
 
-    private fun awaitReady() {
-        if (!initLatch.await(15, TimeUnit.SECONDS)) {
-            throw IllegalStateException("TTS engine initialization timed out")
+    private class SynthesisResultWaiter {
+        private val latch = CountDownLatch(1)
+        private val result = AtomicReference<SynthesisOutcome?>(null)
+        fun complete(outcome: SynthesisOutcome) {
+            result.set(outcome)
+            latch.countDown()
+        }
+        fun await(timeout: Long, unit: TimeUnit): SynthesisOutcome? {
+            return if (latch.await(timeout, unit)) result.get() else null
         }
     }
 
-    private fun refreshVoiceCache() {
-        readyVoiceNames.clear()
-        cachedVoiceInfos = textToSpeech.voices
-            ?.map { voice ->
-                VoiceInfo(
-                    id = voice.name,
-                    name = voice.name,
-                    quality = voice.quality,
-                    latency = voice.latency,
-                    requiresNetworkConnection = voice.isNetworkConnectionRequired,
-                )
-            }
-            ?: emptyList()
-        textToSpeech.voices?.forEach { voice ->
-            readyVoiceNames[voice.name] = voice
-            readyVoiceNames[voice.locale.toLanguageTag()] = voice
-        }
+    private sealed class SynthesisOutcome {
+        object Success : SynthesisOutcome()
+        data class Failure(val message: String) : SynthesisOutcome()
     }
-
-    private fun waitForCompletion(utteranceId: String, outputFile: File) {
-        val startedAt = System.currentTimeMillis()
-        var lastFileSize = 0L
-        var unchangedCount = 0
-        
-        while (System.currentTimeMillis() - startedAt < 45000) {
-            val currentSize = outputFile.length()
-            
-            if (currentSize >= 44) {
-                if (currentSize == lastFileSize) {
-                    unchangedCount++
-                    if (unchangedCount > 10) {
-                        pendingUtteranceId.set(null)
-                        return
-                    }
-                } else {
-                    unchangedCount = 0
-                    lastFileSize = currentSize
-                }
-            }
-            
-            val currentResult = pendingResult.get()
-            if (currentResult != null) {
-                when (currentResult) {
-                    is SynthesisOutcome.Success -> {
-                        if (outputFile.exists() && outputFile.length() > 44) {
-                            pendingUtteranceId.set(null)
-                            return
-                        }
-                    }
-                    is SynthesisOutcome.Failure -> {
-                        throw IllegalStateException(currentResult.message)
-                    }
-                }
-                pendingResult.set(null)
-            }
-            
-            Thread.sleep(100)
-        }
-        
-        pendingUtteranceId.set(null)
-        if (!outputFile.exists() || outputFile.length() == 0L) {
-            throw IllegalStateException("TTS synthesis failed: output file empty or missing after ${System.currentTimeMillis() - startedAt}ms")
-        }
-    }
-}
-
-private sealed class SynthesisOutcome {
-    data object Success : SynthesisOutcome()
-    data class Failure(val message: String) : SynthesisOutcome()
 }
 
