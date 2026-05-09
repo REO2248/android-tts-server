@@ -21,10 +21,18 @@ class TtsServerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        ServerRuntimeState.port = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getInt(KEY_PORT, ServerRuntimeState.port)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val savedPort = prefs.getInt(KEY_PORT, ServerRuntimeState.port)
+        ServerRuntimeState.port = savedPort
+
         startInForeground()
-        // Start server in background thread to avoid blocking
-        Thread { ensureServerRunning() }.start()
+        if (savedPort in 1..65535) {
+            // Start server in background thread to avoid blocking
+            Thread { ensureServerRunning() }.start()
+        } else {
+            Log.w(TAG, "onCreate: invalid port $savedPort, stopping service")
+            stopSelf()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

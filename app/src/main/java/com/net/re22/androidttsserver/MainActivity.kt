@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
         }
 
         portInput = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_NUMBER
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_SIGNED
             setText(settings.getInt(KEY_PORT, ServerRuntimeState.port).toString())
             hint = "Port"
         }
@@ -185,18 +185,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun applyPortFromUi() {
-        val requestedPort = portInput.text?.toString()?.toIntOrNull()
-        if (requestedPort == null || requestedPort !in 1..65535) {
-            statusText.text = "Invalid port"
-            return
-        }
+        val requestedPort = portInput.text?.toString()?.toIntOrNull() ?: -1
         settings.edit().putInt(KEY_PORT, requestedPort).apply()
-        val intent = Intent(this, TtsServerService::class.java).apply {
-            action = TtsServerService.ACTION_RESTART_PORT
-            putExtra(TtsServerService.EXTRA_PORT, requestedPort)
+
+        if (requestedPort in 1..65535) {
+            val intent = Intent(this, TtsServerService::class.java).apply {
+                action = TtsServerService.ACTION_RESTART_PORT
+                putExtra(TtsServerService.EXTRA_PORT, requestedPort)
+            }
+            ContextCompat.startForegroundService(this, intent)
+            statusText.text = "Applying port $requestedPort"
+        } else {
+            stopServerService()
+            statusText.text = "Server disabled (port: $requestedPort)"
         }
-        ContextCompat.startForegroundService(this, intent)
-        statusText.text = "Applying port $requestedPort"
     }
 
     private fun updateBatteryOptimizationUi() {
